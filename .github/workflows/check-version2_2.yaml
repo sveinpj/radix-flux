@@ -1,4 +1,4 @@
-name: Check for new versions v2
+name: Check for new versions v2 - step2
 on:
   schedule:
     # * is a special character in YAML so you have to quote this string
@@ -52,19 +52,19 @@ jobs:
             echo "PR_NAME=${PR_NAME_TEMP} - ${destinationCluster}" >> $GITHUB_ENV
           fi
 
-      - name: Check version
-        id: checkversion
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SOURCE_CLUSTER: ${{ inputs.sourceCluster }}
-          DESTINATION_CLUSTER: ${{ inputs.destinationCluster }}
-        run: .github/workflows/scripts/update_components.sh
-
-      # - name: Create PR
-      #   if: ${{ steps.checkversion.outputs.numberOfChanges > 0 }}
+      # - name: Check version
+      #   id: checkversion
       #   env:
       #     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      #     SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK }}
-      #     PR_BRANCH: ${{ env.PR_BRANCH }}
-      #     PR_NAME: ${{ env.PR_NAME }}
-      #   run: .github/workflows/scripts/create_prv2.sh
+      #     SOURCE_CLUSTER: ${{ inputs.sourceCluster }}
+      #     DESTINATION_CLUSTER: ${{ inputs.destinationCluster }}
+      #   run: .github/workflows/scripts/update_components.sh
+
+      - name: Create PR
+        # if: ${{ steps.checkversion.outputs.numberOfChanges > 0 }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK }}
+          PR_BRANCH: ${{ env.PR_BRANCH }}
+          PR_NAME: ${{ env.PR_NAME }}
+        run: .github/workflows/scripts/create_prv2.sh

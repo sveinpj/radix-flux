@@ -1,0 +1,70 @@
+name: Check for new versions v2 - step1
+on:
+  schedule:
+    # * is a special character in YAML so you have to quote this string
+    - cron: '0 12 * * *'
+  workflow_dispatch:
+    inputs:
+      sourceCluster:
+        description: 'Source cluster'
+        required: false
+        type: choice
+        options:
+          - 'development'
+          - 'monitoring'
+          - 'playground'
+          - 'production'
+          - 'c2-production'
+      destinationCluster:
+        description: 'Destination cluster'
+        required: false
+        type: choice
+        options:
+          - 'development'
+          - 'monitoring'
+          - 'playground'
+          - 'production'
+          - 'c2-production'
+
+jobs:
+  check-version:
+    name: Check for new versions
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: Set environments
+        run: |
+          PR_BRANCH_TEMP="automatic-version-update"
+          PR_NAME_TEMP="Automatic Pull Request"
+          destinationCluster="${{ inputs.destinationCluster }}"
+
+          if [ -z $destinationCluster ]; then
+            echo "PR_BRANCH=${PR_BRANCH_TEMP}-development" >> $GITHUB_ENV
+            echo "PR_NAME=${PR_NAME_TEMP} - development" >> $GITHUB_ENV
+          else
+            echo "PR_BRANCH=${PR_BRANCH_TEMP}-${destinationCluster}" >> $GITHUB_ENV
+            echo "PR_NAME=${PR_NAME_TEMP} - ${destinationCluster}" >> $GITHUB_ENV
+          fi
+
+      - name: Check version
+        id: checkversion
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_CLUSTER: ${{ inputs.sourceCluster }}
+          DESTINATION_CLUSTER: ${{ inputs.destinationCluster }}
+        run: .github/workflows/scripts/update_components.sh
+
+      # - name: Create PR
+      #   if: ${{ steps.checkversion.outputs.numberOfChanges > 0 }}
+      #   env:
+      #     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      #     SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK }}
+      #     PR_BRANCH: ${{ env.PR_BRANCH }}
+      #     PR_NAME: ${{ env.PR_NAME }}
+      #   run: .github/workflows/scripts/create_prv2.sh
