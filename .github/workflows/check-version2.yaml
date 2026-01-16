@@ -60,11 +60,11 @@ jobs:
           DESTINATION_CLUSTER: ${{ inputs.destinationCluster }}
         run: .github/workflows/scripts/update_components.sh
 
-      - name: Create PR
-        if: ${{ steps.checkversion.outputs.numberOfChanges > 0 }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK }}
-          PR_BRANCH: ${{ env.PR_BRANCH }}
-          PR_NAME: ${{ env.PR_NAME }}
-        run: .github/workflows/scripts/create_prv2.sh
+      # - name: Create PR
+      #   if: ${{ steps.checkversion.outputs.numberOfChanges > 0 }}
+      #   env:
+      #     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      #     SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK }}
+      #     PR_BRANCH: ${{ env.PR_BRANCH }}
+      #     PR_NAME: ${{ env.PR_NAME }}
+      #   run: .github/workflows/scripts/create_prv2.sh
