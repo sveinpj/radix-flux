@@ -46,105 +46,94 @@ function create-pr() {
     fi
 }
 
-function get-changed-files-by-component() {
-    # Get all changed files between master and base branch
-    git diff --name-only origin/master "${PR_BRANCH}"
-}
-
-function extract-component-from-path() {
-    filepath=$1
+function get-changed-versions() {
+    # Get the diff between master and base branch
+    git diff origin/master "${PR_BRANCH}" > /tmp/full_diff.txt
     
-    # Try to extract component name from path patterns
-    # Pattern 1: components/radix-platform/{component}/
-    if [[ "$filepath" =~ ^components/radix-platform/([^/]+)/ ]]; then
-        echo "${BASH_REMATCH[1]}"
-        return
-    fi
+    # Parse diff to find version changes
+    # Look for lines like: +BLOB_CSI_DRIVER=1.27.1 or -BLOB_CSI_DRIVER=1.27.0
+    # or version: 1.2.3 in YAML files
     
-    # Pattern 2: components/flux/{component}/
-    if [[ "$filepath" =~ ^components/flux/([^/]+)/ ]]; then
-        echo "flux-${BASH_REMATCH[1]}"
-        return
-    fi
+    declare -A version_map
     
-    # Pattern 3: components/third-party/{component}/
-    if [[ "$filepath" =~ ^components/third-party/([^/]+)/ ]]; then
-        echo "${BASH_REMATCH[1]}"
-        return
-    fi
-    
-    # If not in a component directory, it's common
-    echo "COMMON"
-}
-
-function get-all-components() {
-    changed_files=$(get-changed-files-by-component)
-    
-    declare -A component_map
-    
-    while IFS= read -r file; do
-        if [[ -n "$file" ]]; then
-            component=$(extract-component-from-path "$file")
-            component_map["$component"]=1
+    # Pattern 1: Environment variable style (VAR_NAME=version)
+    while IFS= read -r line; do
+        if [[ "$line" =~ ^\+[[:space:]]*([A-Z_]+)=([0-9]+\.[0-9]+\.[0-9]+) ]]; then
+            var_name="${BASH_REMATCH[1]}"
+            var_version="${BASH_REMATCH[2]}"
+            version_map["${var_name}"]="${var_version}"
         fi
-    done <<< "$changed_files"
+    done < /tmp/full_diff.txt
     
-    # Return all components except COMMON
-    for comp in "${!component_map[@]}"; do
-        if [[ "$comp" != "COMMON" ]]; then
-            echo "$comp"
-        fi
+    # Output format: VAR_NAME:VERSION
+    for var in "${!version_map[@]}"; do
+        echo "${var}:${version_map[$var]}"
     done
 }
 
-function get-files-for-component() {
-    component=$1
-    changed_files=$(get-changed-files-by-component)
+function get-files-with-version-change() {
+    var_name=$1
     
+    # Get all changed files
+    changed_files=$(git diff --name-only origin/master "${PR_BRANCH}")
+    
+    # Check which files contain this variable
+    result_files=""
     while IFS= read -r file; do
-        if [[ -n "$file" ]]; then
-            file_component=$(extract-component-from-path "$file")
-            if [[ "$file_component" == "$component" ]]; then
-                echo "$file"
+        if [[ -n "$file" && -f "$file" ]]; then
+            # Check if this file has changes to this variable
+            file_diff=$(git diff origin/master "${PR_BRANCH}" -- "$file")
+            if echo "$file_diff" | grep -q "^\+.*${var_name}"; then
+                result_files="${result_files}${file}\n"
             fi
         fi
     done <<< "$changed_files"
+    
+    echo -e "$result_files"
 }
 
-function create-component-branch() {
-    component=$1
-    base_branch=$2
-    component_branch="${base_branch}-${component}"
+function create-version-branch() {
+    var_name=$1
+    var_version=$2
+    base_branch=$3
+    version_branch="${base_branch}-${var_name}"
     
-    # Get files for this component
-    component_files=$(get-files-for-component "$component")
+    # Get files that contain this version change
+    version_files=$(get-files-with-version-change "$var_name")
     
-    if [[ -z "$component_files" ]]; then
+    if [[ -z "$version_files" ]]; then
         echo ""
         return
     fi
     
     # Delete the branch if it exists locally
-    git branch -D "${component_branch}" 2>/dev/null || true
+    git branch -D "${version_branch}" 2>/dev/null || true
     
     # Create a new branch from master
     git switch master
     git pull origin master
-    git switch -c "${component_branch}"
+    git switch -c "${version_branch}"
     
-    # Check out only the component files from the base branch
-    while IFS= read -r file; do
-        if [[ -n "$file" ]]; then
-            git checkout "${base_branch}" -- "$file" 2>/dev/null || true
+    # For each file, apply only the changes related to this variable
+    echo -e "$version_files" | while IFS= read -r file; do
+        if [[ -n "$file" && -f "$file" ]]; then
+            # Get the full diff for this file
+            git diff origin/master "${base_branch}" -- "$file" > /tmp/file_diff.txt
+            
+            # Try to extract only lines related to this variable
+            # For simplicity, we'll check out the entire file if it contains the variable
+            if grep -q "${var_name}" /tmp/file_diff.txt; then
+                git checkout "${base_branch}" -- "$file" 2>/dev/null || true
+            fi
         fi
-    done <<< "$component_files"
+    done
     
     # Check if there are any changes to commit
     if [[ -n $(git status --porcelain) ]]; then
         git add .
-        git commit -m "Update ${component}"
-        git push -f origin "${component_branch}"
-        echo "${component_branch}"
+        git commit -m "Update ${var_name} to ${var_version}"
+        git push -f origin "${version_branch}"
+        echo "${version_branch}"
     else
         echo ""
     fi
@@ -154,15 +143,27 @@ function create-common-branch() {
     base_branch=$1
     common_branch="${base_branch}-common"
     
-    # Get all changed files
-    changed_files=$(get-changed-files-by-component)
+    # Get all version variables that have their own PRs
+    version_changes=$(get-changed-versions)
     
-    # Get files that belong to COMMON
+    # Get all changed files
+    changed_files=$(git diff --name-only origin/master "${base_branch}")
+    
+    # Find files that don't contain any of the version variables
     common_files=""
     while IFS= read -r file; do
-        if [[ -n "$file" ]]; then
-            file_component=$(extract-component-from-path "$file")
-            if [[ "$file_component" == "COMMON" ]]; then
+        if [[ -n "$file" && -f "$file" ]]; then
+            file_diff=$(git diff origin/master "${base_branch}" -- "$file")
+            has_version_var=false
+            
+            while IFS=: read -r var_name var_version; do
+                if [[ -n "$var_name" ]] && echo "$file_diff" | grep -q "^\+.*${var_name}"; then
+                    has_version_var=true
+                    break
+                fi
+            done <<< "$version_changes"
+            
+            if [[ "$has_version_var" == "false" ]]; then
                 common_files="${common_files}${file}\n"
             fi
         fi
@@ -181,7 +182,7 @@ function create-common-branch() {
     git pull origin master
     git switch -c "${common_branch}"
     
-    # Check out only common files from the base branch
+    # Check out only common files
     echo -e "$common_files" | while IFS= read -r file; do
         if [[ -n "$file" ]]; then
             git checkout "${base_branch}" -- "$file" 2>/dev/null || true
@@ -214,38 +215,38 @@ else
     exit 0
 fi
 
-# Get list of all unique components with changes
-components=$(get-all-components | sort -u)
+# Get list of all version changes
+version_changes=$(get-changed-versions)
 
-if [[ -n "$components" ]]; then
-    echo "Found changed components:"
-    echo "$components"
+if [[ -n "$version_changes" ]]; then
+    echo "Found version changes:"
+    echo "$version_changes"
     
-    # Create PR for each component
-    while IFS= read -r component; do
-        if [[ -n "$component" ]]; then
-            echo "Processing component: ${component}"
-            component_branch=$(create-component-branch "${component}" "${PR_BRANCH}")
+    # Create PR for each version change
+    while IFS=: read -r var_name var_version; do
+        if [[ -n "$var_name" && -n "$var_version" ]]; then
+            echo "Processing version: ${var_name} ${var_version}"
+            version_branch=$(create-version-branch "${var_name}" "${var_version}" "${PR_BRANCH}")
             
-            if [[ -n "${component_branch}" ]]; then
-                pr_name="Automatic PR - ${component}"
-                create-pr "${component_branch}" "${pr_name}" 0
+            if [[ -n "${version_branch}" ]]; then
+                pr_name="Automatic PR - ${var_name}: ${var_version}"
+                create-pr "${version_branch}" "${pr_name}" 0
             fi
         fi
-    done <<< "$components"
+    done <<< "$version_changes"
 fi
 
-# Create PR for common changes (everything except component-specific changes)
-echo "Processing common changes"
+# Create PR for any remaining changes (files without version variables)
+echo "Processing remaining changes"
 common_branch=$(create-common-branch "${PR_BRANCH}")
 
 if [[ -n "${common_branch}" ]]; then
-    pr_name="Automatic PR - Common"
+    pr_name="Automatic PR - Other changes"
     create-pr "${common_branch}" "${pr_name}" 0
 else
-    # If no common changes but no components either, create the standard PR
-    if [[ -z "$components" ]]; then
-        echo "No component-specific changes found, creating standard PR"
+    # If no common changes and no version changes, create the standard PR
+    if [[ -z "$version_changes" ]]; then
+        echo "No version-specific changes found, creating standard PR"
         pr_name="Automatic Pull Request"
         create-pr "${PR_BRANCH}" "${pr_name}" 0
     fi
