@@ -61,14 +61,16 @@ function create-component-branch() {
     base_branch=$2
     component_branch="${base_branch}-${component}"
     
-    # Switch back to the base branch
-    git switch "${base_branch}"
+    # Delete the branch if it exists locally
+    git branch -D "${component_branch}" 2>/dev/null || true
     
-    # Create a new branch for this component
+    # Create a new branch from master
+    git switch master
+    git pull origin master
     git switch -c "${component_branch}"
     
-    # Cherry-pick only the changes for this component
-    git diff origin/master -- "components/radix-platform/${component}" | git apply --index
+    # Check out only the component files from the base branch
+    git checkout "${base_branch}" -- "components/radix-platform/${component}"
     
     # Check if there are any changes to commit
     if [[ -n $(git status --porcelain) ]]; then
@@ -85,22 +87,24 @@ function create-common-branch() {
     base_branch=$1
     common_branch="${base_branch}-common"
     
-    # Switch back to the base branch
-    git switch "${base_branch}"
-    
-    # Create a new branch for common changes
-    git switch -c "${common_branch}"
-    
     # Get all components that will have their own PRs
     components=$(get-changed-components)
     
-    # Reset to match origin/master
-    git reset --hard origin/master
+    # Delete the branch if it exists locally
+    git branch -D "${common_branch}" 2>/dev/null || true
     
-    # Apply all changes from base branch except component-specific ones
-    git diff origin/master "${base_branch}" -- . \
-        $(for comp in $components; do echo ":(exclude)components/radix-platform/${comp}"; done) \
-        | git apply --index
+    # Create a new branch from master
+    git switch master
+    git pull origin master
+    git switch -c "${common_branch}"
+    
+    # Check out all files from base branch
+    git checkout "${base_branch}" -- .
+    
+    # Remove component-specific changes
+    for comp in $components; do
+        git checkout master -- "components/radix-platform/${comp}" 2>/dev/null || true
+    done
     
     # Check if there are any changes to commit
     if [[ -n $(git status --porcelain) ]]; then
@@ -116,6 +120,16 @@ function create-common-branch() {
 # Main execution
 if [[ -z "${PR_BRANCH}" ]]; then
     PR_BRANCH="flux-image-updates"
+fi
+
+# First, switch to the base branch to check what has changed
+git fetch origin
+if [[ $(git branch --remotes) == *"origin/${PR_BRANCH}"* ]]; then
+    git switch "${PR_BRANCH}"
+    git pull
+else
+    echo "Base branch ${PR_BRANCH} does not exist, exiting"
+    exit 0
 fi
 
 # Get list of changed components
