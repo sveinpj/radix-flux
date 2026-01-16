@@ -46,20 +46,83 @@ function create-pr() {
     fi
 }
 
-function get-changed-components() {
-    # Get all changed files in components/radix-platform
-    changed_files=$(git diff --name-only origin/master)
+function get-changed-files-by-component() {
+    # Get all changed files between master and base branch
+    git diff --name-only origin/master "${PR_BRANCH}"
+}
+
+function extract-component-from-path() {
+    filepath=$1
     
-    # Extract unique component names from changed files
-    components=$(echo "$changed_files" | grep "^components/radix-platform/" | cut -d'/' -f3 | sort -u)
+    # Try to extract component name from path patterns
+    # Pattern 1: components/radix-platform/{component}/
+    if [[ "$filepath" =~ ^components/radix-platform/([^/]+)/ ]]; then
+        echo "${BASH_REMATCH[1]}"
+        return
+    fi
     
-    echo "$components"
+    # Pattern 2: components/flux/{component}/
+    if [[ "$filepath" =~ ^components/flux/([^/]+)/ ]]; then
+        echo "flux-${BASH_REMATCH[1]}"
+        return
+    fi
+    
+    # Pattern 3: components/third-party/{component}/
+    if [[ "$filepath" =~ ^components/third-party/([^/]+)/ ]]; then
+        echo "${BASH_REMATCH[1]}"
+        return
+    fi
+    
+    # If not in a component directory, it's common
+    echo "COMMON"
+}
+
+function get-all-components() {
+    changed_files=$(get-changed-files-by-component)
+    
+    declare -A component_map
+    
+    while IFS= read -r file; do
+        if [[ -n "$file" ]]; then
+            component=$(extract-component-from-path "$file")
+            component_map["$component"]=1
+        fi
+    done <<< "$changed_files"
+    
+    # Return all components except COMMON
+    for comp in "${!component_map[@]}"; do
+        if [[ "$comp" != "COMMON" ]]; then
+            echo "$comp"
+        fi
+    done
+}
+
+function get-files-for-component() {
+    component=$1
+    changed_files=$(get-changed-files-by-component)
+    
+    while IFS= read -r file; do
+        if [[ -n "$file" ]]; then
+            file_component=$(extract-component-from-path "$file")
+            if [[ "$file_component" == "$component" ]]; then
+                echo "$file"
+            fi
+        fi
+    done <<< "$changed_files"
 }
 
 function create-component-branch() {
     component=$1
     base_branch=$2
     component_branch="${base_branch}-${component}"
+    
+    # Get files for this component
+    component_files=$(get-files-for-component "$component")
+    
+    if [[ -z "$component_files" ]]; then
+        echo ""
+        return
+    fi
     
     # Delete the branch if it exists locally
     git branch -D "${component_branch}" 2>/dev/null || true
@@ -70,11 +133,15 @@ function create-component-branch() {
     git switch -c "${component_branch}"
     
     # Check out only the component files from the base branch
-    git checkout "${base_branch}" -- "components/radix-platform/${component}"
+    while IFS= read -r file; do
+        if [[ -n "$file" ]]; then
+            git checkout "${base_branch}" -- "$file" 2>/dev/null || true
+        fi
+    done <<< "$component_files"
     
     # Check if there are any changes to commit
     if [[ -n $(git status --porcelain) ]]; then
-        git add "components/radix-platform/${component}"
+        git add .
         git commit -m "Update ${component}"
         git push -f origin "${component_branch}"
         echo "${component_branch}"
@@ -87,8 +154,24 @@ function create-common-branch() {
     base_branch=$1
     common_branch="${base_branch}-common"
     
-    # Get all components that will have their own PRs
-    components=$(get-changed-components)
+    # Get all changed files
+    changed_files=$(get-changed-files-by-component)
+    
+    # Get files that belong to COMMON
+    common_files=""
+    while IFS= read -r file; do
+        if [[ -n "$file" ]]; then
+            file_component=$(extract-component-from-path "$file")
+            if [[ "$file_component" == "COMMON" ]]; then
+                common_files="${common_files}${file}\n"
+            fi
+        fi
+    done <<< "$changed_files"
+    
+    if [[ -z "$common_files" ]]; then
+        echo ""
+        return
+    fi
     
     # Delete the branch if it exists locally
     git branch -D "${common_branch}" 2>/dev/null || true
@@ -98,12 +181,11 @@ function create-common-branch() {
     git pull origin master
     git switch -c "${common_branch}"
     
-    # Check out all files from base branch
-    git checkout "${base_branch}" -- .
-    
-    # Remove component-specific changes
-    for comp in $components; do
-        git checkout master -- "components/radix-platform/${comp}" 2>/dev/null || true
+    # Check out only common files from the base branch
+    echo -e "$common_files" | while IFS= read -r file; do
+        if [[ -n "$file" ]]; then
+            git checkout "${base_branch}" -- "$file" 2>/dev/null || true
+        fi
     done
     
     # Check if there are any changes to commit
@@ -132,23 +214,25 @@ else
     exit 0
 fi
 
-# Get list of changed components
-components=$(get-changed-components)
+# Get list of all unique components with changes
+components=$(get-all-components | sort -u)
 
 if [[ -n "$components" ]]; then
     echo "Found changed components:"
     echo "$components"
     
     # Create PR for each component
-    for component in $components; do
-        echo "Processing component: ${component}"
-        component_branch=$(create-component-branch "${component}" "${PR_BRANCH}")
-        
-        if [[ -n "${component_branch}" ]]; then
-            pr_name="Automatic PR - ${component}"
-            create-pr "${component_branch}" "${pr_name}" 0
+    while IFS= read -r component; do
+        if [[ -n "$component" ]]; then
+            echo "Processing component: ${component}"
+            component_branch=$(create-component-branch "${component}" "${PR_BRANCH}")
+            
+            if [[ -n "${component_branch}" ]]; then
+                pr_name="Automatic PR - ${component}"
+                create-pr "${component_branch}" "${pr_name}" 0
+            fi
         fi
-    done
+    done <<< "$components"
 fi
 
 # Create PR for common changes (everything except component-specific changes)
